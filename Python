@@ -1,0 +1,98 @@
+import requests
+import time
+import pandas as pd
+from datetime import datetime
+
+BOT_TOKEN = "YOUR_BOT_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
+
+SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+
+def send(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+
+def klines(symbol, interval, limit=200):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    data = requests.get(url).json()
+    df = pd.DataFrame(data)
+    df = df.iloc[:, :6]
+    df.columns = ["time","open","high","low","close","volume"]
+    df = df.astype(float)
+    return df
+
+def ema(s, p):
+    return s.ewm(span=p, adjust=False).mean()
+
+def rsi(s, p=14):
+    d = s.diff()
+    gain = (d.where(d > 0, 0)).rolling(p).mean()
+    loss = (-d.where(d < 0, 0)).rolling(p).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def rejection(df):
+    c = df.iloc[-1]
+    body = abs(c.close - c.open)
+    wick = min(c.open, c.close) - c.low
+    return wick > body * 1.5
+
+def signal(symbol):
+
+    h1 = klines(symbol, "1h")
+    h4 = klines(symbol, "4h")
+
+    price = h1.close.iloc[-1]
+
+    ema20 = ema(h1.close, 20).iloc[-1]
+    ema50 = ema(h1.close, 50).iloc[-1]
+    ema200_4h = ema(h4.close, 200).iloc[-1]
+
+    r = rsi(h1.close).iloc[-1]
+
+    vol = h1.volume.iloc[-1]
+    avg_vol = h1.volume.rolling(20).mean().iloc[-1]
+
+    conditions = [
+        price > ema200_4h,
+        ema20 <= price <= ema50 * 1.01,
+        45 <= r <= 60,
+        vol > avg_vol,
+        rejection(h1)
+    ]
+
+    return all(conditions), price
+
+def send_signal(sym, price):
+
+    sl = price * 0.985
+    tp = price * 1.03
+
+    msg = f"""
+💰 AUTO SAFE SIGNAL
+
+Pair: {sym}
+Mode: Spot Only
+
+Entry: {price:.2f}
+Stop Loss: {sl:.2f}
+Take Profit: {tp:.2f}
+
+Use ₹200–₹300 only
+Low Risk Strategy
+"""
+    send(msg)
+
+while True:
+
+    hour = datetime.utcnow().hour
+
+    if 12 <= hour <= 20:  # High liquidity
+
+        for s in SYMBOLS:
+            ok, price = signal(s)
+            if ok:
+                send_signal(s, price)
+                time.sleep(21600)  # cooldown 6h
+
+    time.sleep(900)
